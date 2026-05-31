@@ -14,8 +14,10 @@ import os
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+KST = timezone(timedelta(hours=9))
 
 import requests
 from flask import Flask, jsonify, Response
@@ -97,7 +99,7 @@ class LogWatcher(threading.Thread):
 
             bot_state["recent_logs"].append(line)
             bot_state["recent_logs"] = bot_state["recent_logs"][-100:]
-            bot_state["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            bot_state["last_update"] = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
             self._parse_line(line)
 
@@ -296,7 +298,7 @@ def dashboard():
     html = html.replace("{{COINS}}", coins_html)
     html = html.replace("{{TRADES}}", trades_html)
     html = html.replace("{{LOGS}}", logs)
-    html = html.replace("{{NOW}}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    html = html.replace("{{NOW}}", datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"))
 
     return Response(html, content_type="text/html; charset=utf-8")
 
