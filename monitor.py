@@ -249,7 +249,7 @@ def dashboard():
     status = bot_state["status"]
     status_class = status if status in ("running", "stopped") else "unknown"
 
-    coin_colors = {"BTC": "#f7931a", "ETH": "#627eea", "SOL": "#00ffa3"}
+    coin_colors = {"BTC": "#f7931a", "ETH": "#627eea", "SOL": "#00ffa3", "XRP": "#00aae4", "HBAR": "#8259ef"}
     coins_html = ""
     for coin, data in bot_state["coins"].items():
         sig = data.get("signal", "hold")

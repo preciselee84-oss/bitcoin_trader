@@ -31,8 +31,8 @@ def _weights(name: str, default: str, count: int) -> list[float]:
 UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
 UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
 
-PORTFOLIO_TICKERS = _csv("PORTFOLIO_TICKERS", "KRW-BTC,KRW-ETH,KRW-SOL")
-PORTFOLIO_WEIGHTS = _weights("PORTFOLIO_WEIGHTS", "0.6,0.3,0.1", len(PORTFOLIO_TICKERS))
+PORTFOLIO_TICKERS = _csv("PORTFOLIO_TICKERS", "KRW-BTC,KRW-ETH,KRW-SOL,KRW-XRP,KRW-HBAR")
+PORTFOLIO_WEIGHTS = _weights("PORTFOLIO_WEIGHTS", "0.4,0.25,0.15,0.1,0.1", len(PORTFOLIO_TICKERS))
 PORTFOLIO_REBALANCE_GAP_PCT = float(os.getenv("PORTFOLIO_REBALANCE_GAP_PCT", "0.05"))
 
 TICKER = os.getenv("TICKER", PORTFOLIO_TICKERS[0])
@@ -40,6 +40,8 @@ TICKERS = {
     "KRW-BTC": {"name": "비트코인", "short_name": "BTC", "color": "#f7931a"},
     "KRW-ETH": {"name": "이더리움", "short_name": "ETH", "color": "#627eea"},
     "KRW-SOL": {"name": "솔라나", "short_name": "SOL", "color": "#00ffa3"},
+    "KRW-XRP": {"name": "리플", "short_name": "XRP", "color": "#00aae4"},
+    "KRW-HBAR": {"name": "헤데라", "short_name": "HBAR", "color": "#8259ef"},
 }
 
 # Strategy timeframe. minute60 is less noisy than short scalping and updates often enough.
