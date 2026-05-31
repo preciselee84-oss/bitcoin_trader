@@ -3,10 +3,39 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _csv(name: str, default: str) -> list[str]:
+    values = [item.strip().upper() for item in os.getenv(name, default).split(",")]
+    values = [item for item in values if item]
+    if values:
+        return values
+    return [item.strip().upper() for item in default.split(",") if item.strip()]
+
+
+def _weights(name: str, default: str, count: int) -> list[float]:
+    if count <= 0:
+        return []
+
+    try:
+        values = [float(item.strip()) for item in os.getenv(name, default).split(",") if item.strip()]
+    except ValueError:
+        values = []
+
+    if len(values) != count or sum(values) <= 0:
+        return [1 / count for _ in range(count)]
+
+    total = sum(values)
+    return [value / total for value in values]
+
+
 UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
 UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
 
-TICKER = os.getenv("TICKER", "KRW-BTC")
+PORTFOLIO_TICKERS = _csv("PORTFOLIO_TICKERS", "KRW-BTC,KRW-ETH,KRW-SOL")
+PORTFOLIO_WEIGHTS = _weights("PORTFOLIO_WEIGHTS", "0.6,0.3,0.1", len(PORTFOLIO_TICKERS))
+PORTFOLIO_REBALANCE_GAP_PCT = float(os.getenv("PORTFOLIO_REBALANCE_GAP_PCT", "0.05"))
+
+TICKER = os.getenv("TICKER", PORTFOLIO_TICKERS[0])
 TICKERS = {
     "KRW-BTC": {"name": "비트코인", "short_name": "BTC", "color": "#f7931a"},
     "KRW-ETH": {"name": "이더리움", "short_name": "ETH", "color": "#627eea"},
@@ -38,7 +67,7 @@ SHORT_MA_PERIOD = EMA_FAST_PERIOD
 LONG_MA_PERIOD = EMA_SLOW_PERIOD
 
 # Risk controls. Keep this conservative until a backtest shows otherwise.
-TRADE_RATIO = float(os.getenv("TRADE_RATIO", "0.25"))
+TRADE_RATIO = float(os.getenv("TRADE_RATIO", "0.10"))
 KRW_BALANCE_BUFFER = float(os.getenv("KRW_BALANCE_BUFFER", "0.995"))
 FEE_RATE = float(os.getenv("FEE_RATE", "0.0005"))
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "2.0"))

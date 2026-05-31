@@ -22,18 +22,19 @@ logger = logging.getLogger(__name__)
 
 
 class Trader:
-    def __init__(self):
+    def __init__(self, ticker: str = TICKER, upbit=None, state_file: str | Path | None = None):
         if not UPBIT_ACCESS_KEY or not UPBIT_SECRET_KEY:
             raise ValueError("API keys are missing. Check your .env file.")
 
-        self.upbit = pyupbit.Upbit(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
-        self.state_path = Path(STATE_FILE)
+        self.ticker = ticker
+        self.upbit = upbit or pyupbit.Upbit(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
+        self.state_path = Path(state_file or STATE_FILE)
         self.state = self._load_state()
-        logger.info("Connected to Upbit API")
+        logger.info("Connected to Upbit API for %s", self.ticker)
 
     @property
     def coin_symbol(self) -> str:
-        return TICKER.split("-")[-1]
+        return self.ticker.split("-")[-1]
 
     def _load_state(self) -> Dict[str, Any]:
         if not self.state_path.exists():
@@ -56,10 +57,10 @@ class Trader:
             logger.warning("Could not save state file: %s", exc)
 
     def _position_state(self) -> Dict[str, Any]:
-        return self.state.setdefault("positions", {}).setdefault(TICKER, {})
+        return self.state.setdefault("positions", {}).setdefault(self.ticker, {})
 
     def _clear_position_state(self) -> None:
-        self.state.setdefault("positions", {}).pop(TICKER, None)
+        self.state.setdefault("positions", {}).pop(self.ticker, None)
         self._save_state()
 
     def get_krw_balance(self) -> float:
@@ -72,7 +73,7 @@ class Trader:
 
     def get_current_price(self) -> float:
         try:
-            price = pyupbit.get_current_price(TICKER)
+            price = pyupbit.get_current_price(self.ticker)
             return float(price) if price else 0.0
         except Exception as exc:
             logger.error("Failed to load current price: %s", exc)
@@ -159,13 +160,15 @@ class Trader:
 
         return "hold"
 
-    def buy(self) -> bool:
-        if self.has_position():
-            logger.info("Buy skipped: existing %s position is already open", TICKER)
+    def buy(self, max_krw_amount: float | None = None, allow_existing: bool = False) -> bool:
+        if self.has_position() and not allow_existing:
+            logger.info("Buy skipped: existing %s position is already open", self.ticker)
             return False
 
         krw_balance = self.get_krw_balance()
         trade_amount = min(krw_balance * TRADE_RATIO, krw_balance * KRW_BALANCE_BUFFER)
+        if max_krw_amount is not None:
+            trade_amount = min(trade_amount, max_krw_amount, krw_balance * KRW_BALANCE_BUFFER)
 
         if trade_amount < MIN_TRADE_AMOUNT_KRW:
             logger.warning(
@@ -176,14 +179,14 @@ class Trader:
             return False
 
         try:
-            result = self.upbit.buy_market_order(TICKER, trade_amount)
+            result = self.upbit.buy_market_order(self.ticker, trade_amount)
             if result and "error" not in result:
                 current_price = self.get_current_price()
                 pos_state = self._position_state()
                 pos_state["entry_price"] = current_price
                 pos_state["highest_price"] = current_price
                 self._save_state()
-                logger.info("Buy order placed: %s %0.0f KRW", TICKER, trade_amount)
+                logger.info("Buy order placed: %s %0.0f KRW", self.ticker, trade_amount)
                 return True
 
             error_msg = (result or {}).get("error", {}).get("message", "unknown error")
@@ -209,9 +212,9 @@ class Trader:
             return False
 
         try:
-            result = self.upbit.sell_market_order(TICKER, available)
+            result = self.upbit.sell_market_order(self.ticker, available)
             if result and "error" not in result:
-                logger.info("Sell order placed: %s %.8f", TICKER, available)
+                logger.info("Sell order placed: %s %.8f", self.ticker, available)
                 self._clear_position_state()
                 return True
 

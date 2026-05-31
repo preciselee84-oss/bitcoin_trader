@@ -15,6 +15,7 @@ import pandas as pd
 from config import (
     UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY,
     KRW_BALANCE_BUFFER, MAX_DAILY_LOSS_PCT,
+    PORTFOLIO_TICKERS,
     TRADE_RATIO, MIN_TRADE_AMOUNT_KRW,
 )
 
@@ -47,17 +48,19 @@ ACCENT = "#1f6feb"
 
 
 def get_normal_tickers():
+    allowed = set(PORTFOLIO_TICKERS)
     url = "https://api.upbit.com/v1/market/all?is_details=true"
     res = requests.get(url).json()
     tickers = []
     names = {}
     for m in res:
-        if not m["market"].startswith("KRW-"):
+        market = m["market"]
+        if market not in allowed:
             continue
         if m.get("market_event", {}).get("warning", False):
             continue
-        tickers.append(m["market"])
-        names[m["market"]] = m["korean_name"]
+        tickers.append(market)
+        names[market] = m["korean_name"]
     return tickers, names
 
 
@@ -105,7 +108,7 @@ class AutoTrader:
 
     def refresh_tickers(self):
         self.tickers, self.names = get_normal_tickers()
-        self.add_log(f"[SCAN] {len(self.tickers)}개 종목 로드 완료", "info")
+        self.add_log(f"[SCAN] 포트폴리오 대상 {len(self.tickers)}개 로드: {', '.join(self.tickers)}", "info")
 
     def scan_momentum(self):
         try:

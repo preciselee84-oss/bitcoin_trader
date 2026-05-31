@@ -57,11 +57,16 @@ At minimum, set:
 ```env
 UPBIT_ACCESS_KEY=your_access_key_here
 UPBIT_SECRET_KEY=your_secret_key_here
-TICKER=KRW-BTC
+PORTFOLIO_TICKERS=KRW-BTC,KRW-ETH,KRW-SOL
+PORTFOLIO_WEIGHTS=0.6,0.3,0.1
+TRADE_RATIO=0.10
 DRY_RUN=true
 ```
 
 Keep `DRY_RUN=true` for the first test. It logs signals but skips real orders.
+The default portfolio only watches BTC, ETH, and SOL. `TRADE_RATIO=0.10` means
+each buy signal can use up to 10% of that coin's target allocation, so entries
+are gradual instead of all at once.
 
 ## Test
 

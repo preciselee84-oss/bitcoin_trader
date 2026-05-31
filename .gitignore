@@ -5,3 +5,4 @@ trading.log
 .venv/
 *.log
 trade_state.json
+trade_state*.json
