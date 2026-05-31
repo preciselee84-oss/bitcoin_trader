@@ -1,82 +1,185 @@
-"""
-백테스트 모듈 - 실제 매매 전에 과거 데이터로 전략을 검증합니다.
-실행: python backtest.py
-"""
+import io
+import sys
+from typing import Dict, List
+
 import pyupbit
-import pandas as pd
-from config import TICKER, SHORT_MA_PERIOD, LONG_MA_PERIOD
+
+from config import (
+    CANDLE_COUNT,
+    CANDLE_INTERVAL,
+    FEE_RATE,
+    MIN_TRADE_AMOUNT_KRW,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
+    TICKER,
+    TRADE_RATIO,
+    TRAILING_STOP_PCT,
+)
+from strategy import calculate_indicators, evaluate_rows
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 
-def backtest(days: int = 200, initial_krw: float = 1_000_000):
-    print(f"\n{'='*60}")
-    print(f"  백테스트 시작")
-    print(f"  기간: 최근 {days}일 | 초기 자금: {initial_krw:,.0f}원")
-    print(f"  전략: MA{SHORT_MA_PERIOD} x MA{LONG_MA_PERIOD} 크로스")
-    print(f"{'='*60}\n")
+def _sell_value(amount_coin: float, price: float) -> float:
+    return amount_coin * price * (1 - FEE_RATE)
 
-    df = pyupbit.get_ohlcv(TICKER, interval="day", count=days)
-    if df is None or df.empty:
-        print("데이터를 가져올 수 없습니다.")
-        return
 
-    df[f"ma_{SHORT_MA_PERIOD}"] = df["close"].rolling(window=SHORT_MA_PERIOD).mean()
-    df[f"ma_{LONG_MA_PERIOD}"] = df["close"].rolling(window=LONG_MA_PERIOD).mean()
-    df = df.dropna()
-
-    short_col = f"ma_{SHORT_MA_PERIOD}"
-    long_col = f"ma_{LONG_MA_PERIOD}"
+def run_backtest(df, initial_krw: float = 1_000_000) -> Dict[str, object]:
+    data = calculate_indicators(df).dropna()
+    if len(data) < 2:
+        raise ValueError("Not enough data after indicator warmup.")
 
     krw = initial_krw
-    btc = 0.0
-    trades = []
+    coin = 0.0
+    entry_price = 0.0
+    highest_price = 0.0
+    max_equity = initial_krw
+    max_drawdown = 0.0
+    trades: List[Dict[str, object]] = []
+    closed_pnls: List[float] = []
 
-    for i in range(1, len(df)):
-        prev = df.iloc[i - 1]
-        curr = df.iloc[i]
-        date = df.index[i]
-        price = curr["close"]
+    for i in range(1, len(data)):
+        prev = data.iloc[i - 1]
+        curr = data.iloc[i]
+        date = data.index[i]
+        price = float(curr["close"])
+        sold_this_bar = False
 
-        if prev[short_col] <= prev[long_col] and curr[short_col] > curr[long_col]:
-            if krw > 0:
-                btc = krw / price
+        if coin > 0:
+            highest_price = max(highest_price, price)
+            pnl_pct = (price - entry_price) / entry_price * 100 if entry_price else 0.0
+            trail_from_high = (highest_price - price) / highest_price * 100 if highest_price else 0.0
+
+            exit_reason = None
+            if pnl_pct <= -STOP_LOSS_PCT:
+                exit_reason = "stop"
+            elif pnl_pct >= TAKE_PROFIT_PCT and trail_from_high >= TRAILING_STOP_PCT:
+                exit_reason = "trail"
+
+            if exit_reason:
+                krw += _sell_value(coin, price)
                 trades.append(
-                    {"date": date, "type": "매수", "price": price, "amount_krw": krw}
+                    {
+                        "date": date,
+                        "type": "sell",
+                        "reason": exit_reason,
+                        "price": price,
+                        "pnl_pct": pnl_pct,
+                    }
                 )
-                krw = 0
+                closed_pnls.append(pnl_pct)
+                coin = 0.0
+                entry_price = 0.0
+                highest_price = 0.0
+                sold_this_bar = True
 
-        elif prev[short_col] >= prev[long_col] and curr[short_col] < curr[long_col]:
-            if btc > 0:
-                sell_krw = btc * price
+        decision = evaluate_rows(prev, curr)
+        signal = decision["signal"]
+
+        if signal == "buy" and coin <= 0 and not sold_this_bar:
+            trade_amount = krw * TRADE_RATIO
+            if trade_amount >= MIN_TRADE_AMOUNT_KRW:
+                coin = trade_amount * (1 - FEE_RATE) / price
+                krw -= trade_amount
+                entry_price = price
+                highest_price = price
                 trades.append(
-                    {"date": date, "type": "매도", "price": price, "amount_krw": sell_krw}
+                    {
+                        "date": date,
+                        "type": "buy",
+                        "reason": decision["reason"],
+                        "price": price,
+                        "amount_krw": trade_amount,
+                    }
                 )
-                krw = sell_krw
-                btc = 0
+        elif signal == "sell" and coin > 0:
+            pnl_pct = (price - entry_price) / entry_price * 100 if entry_price else 0.0
+            krw += _sell_value(coin, price)
+            trades.append(
+                {
+                    "date": date,
+                    "type": "sell",
+                    "reason": decision["reason"],
+                    "price": price,
+                    "pnl_pct": pnl_pct,
+                }
+            )
+            closed_pnls.append(pnl_pct)
+            coin = 0.0
+            entry_price = 0.0
+            highest_price = 0.0
 
-    final_price = df.iloc[-1]["close"]
-    total_value = krw + btc * final_price
-    profit_rate = (total_value - initial_krw) / initial_krw * 100
+        equity = krw + coin * price
+        max_equity = max(max_equity, equity)
+        drawdown = (max_equity - equity) / max_equity * 100 if max_equity else 0.0
+        max_drawdown = max(max_drawdown, drawdown)
 
-    buy_hold_value = initial_krw / df.iloc[0]["close"] * final_price
+    final_price = float(data.iloc[-1]["close"])
+    final_value = krw + coin * final_price
+    profit_rate = (final_value - initial_krw) / initial_krw * 100
+
+    first_price = float(data.iloc[0]["close"])
+    buy_hold_coin = initial_krw * (1 - FEE_RATE) / first_price
+    buy_hold_value = buy_hold_coin * final_price * (1 - FEE_RATE)
     buy_hold_rate = (buy_hold_value - initial_krw) / initial_krw * 100
 
-    print(f"📋 거래 내역 ({len(trades)}건):")
-    print("-" * 60)
-    for t in trades:
-        print(f"  {t['date'].strftime('%Y-%m-%d')} | {t['type']} | "
-              f"가격: {t['price']:,.0f}원 | 금액: {t['amount_krw']:,.0f}원")
+    wins = sum(1 for pnl in closed_pnls if pnl > 0)
+    win_rate = wins / len(closed_pnls) * 100 if closed_pnls else 0.0
 
-    print(f"\n{'='*60}")
-    print(f"  📊 백테스트 결과")
-    print(f"{'='*60}")
-    print(f"  초기 자금:      {initial_krw:,.0f}원")
-    print(f"  최종 자산:      {total_value:,.0f}원")
-    print(f"  수익률:         {profit_rate:+.2f}%")
-    print(f"  총 거래 횟수:   {len(trades)}회")
-    print(f"{'='*60}")
-    print(f"  📈 바이앤홀드:  {buy_hold_value:,.0f}원 ({buy_hold_rate:+.2f}%)")
-    print(f"  전략 vs 홀드:   {profit_rate - buy_hold_rate:+.2f}%p")
-    print(f"{'='*60}\n")
+    return {
+        "initial": initial_krw,
+        "final": final_value,
+        "profit_rate": profit_rate,
+        "buy_hold_value": buy_hold_value,
+        "buy_hold_rate": buy_hold_rate,
+        "max_drawdown": max_drawdown,
+        "trades": trades,
+        "closed_trades": len(closed_pnls),
+        "win_rate": win_rate,
+    }
+
+
+def backtest(count: int = CANDLE_COUNT, initial_krw: float = 1_000_000) -> None:
+    print("=" * 72)
+    print("Backtest")
+    print(f"ticker={TICKER} interval={CANDLE_INTERVAL} candles={count}")
+    print(f"initial={initial_krw:,.0f} KRW fee={FEE_RATE * 100:.3f}% trade_ratio={TRADE_RATIO:.0%}")
+    print("=" * 72)
+
+    df = pyupbit.get_ohlcv(TICKER, interval=CANDLE_INTERVAL, count=count)
+    if df is None or df.empty:
+        print("Could not load candle data.")
+        return
+
+    result = run_backtest(df, initial_krw=initial_krw)
+    trades = result["trades"]
+
+    print(f"\nTrades ({len(trades)} orders)")
+    print("-" * 72)
+    for trade in trades[-30:]:
+        if trade["type"] == "buy":
+            print(
+                f"{trade['date'].strftime('%Y-%m-%d %H:%M')} | BUY  | "
+                f"{trade['price']:,.0f} | {trade['amount_krw']:,.0f} KRW"
+            )
+        else:
+            print(
+                f"{trade['date'].strftime('%Y-%m-%d %H:%M')} | SELL | "
+                f"{trade['price']:,.0f} | {trade['pnl_pct']:+.2f}% | {trade['reason']}"
+            )
+
+    print("\n" + "=" * 72)
+    print("Result")
+    print("=" * 72)
+    print(f"Initial assets:       {result['initial']:,.0f} KRW")
+    print(f"Final assets:         {result['final']:,.0f} KRW")
+    print(f"Strategy return:      {result['profit_rate']:+.2f}%")
+    print(f"Buy and hold return:  {result['buy_hold_rate']:+.2f}%")
+    print(f"Strategy vs hold:     {result['profit_rate'] - result['buy_hold_rate']:+.2f}%p")
+    print(f"Max drawdown:         {result['max_drawdown']:.2f}%")
+    print(f"Closed trades:        {result['closed_trades']}")
+    print(f"Win rate:             {result['win_rate']:.1f}%")
+    print("=" * 72)
 
 
 if __name__ == "__main__":

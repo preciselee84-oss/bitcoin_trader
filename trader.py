@@ -1,12 +1,21 @@
-import pyupbit
+import json
 import logging
+from pathlib import Path
+from typing import Any, Dict
+
+import pyupbit
 
 from config import (
-    UPBIT_ACCESS_KEY,
-    UPBIT_SECRET_KEY,
+    KRW_BALANCE_BUFFER,
+    MIN_TRADE_AMOUNT_KRW,
+    STATE_FILE,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
     TICKER,
     TRADE_RATIO,
-    MIN_TRADE_AMOUNT_KRW,
+    TRAILING_STOP_PCT,
+    UPBIT_ACCESS_KEY,
+    UPBIT_SECRET_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -15,99 +24,218 @@ logger = logging.getLogger(__name__)
 class Trader:
     def __init__(self):
         if not UPBIT_ACCESS_KEY or not UPBIT_SECRET_KEY:
-            raise ValueError(
-                "API 키가 설정되지 않았습니다. .env 파일을 확인해주세요."
-            )
+            raise ValueError("API keys are missing. Check your .env file.")
+
         self.upbit = pyupbit.Upbit(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
-        logger.info("업비트 API 연결 완료")
+        self.state_path = Path(STATE_FILE)
+        self.state = self._load_state()
+        logger.info("Connected to Upbit API")
+
+    @property
+    def coin_symbol(self) -> str:
+        return TICKER.split("-")[-1]
+
+    def _load_state(self) -> Dict[str, Any]:
+        if not self.state_path.exists():
+            return {"positions": {}}
+        try:
+            with self.state_path.open("r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            if "positions" not in state:
+                state["positions"] = {}
+            return state
+        except Exception as exc:
+            logger.warning("Could not read state file, starting fresh: %s", exc)
+            return {"positions": {}}
+
+    def _save_state(self) -> None:
+        try:
+            with self.state_path.open("w", encoding="utf-8") as fh:
+                json.dump(self.state, fh, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("Could not save state file: %s", exc)
+
+    def _position_state(self) -> Dict[str, Any]:
+        return self.state.setdefault("positions", {}).setdefault(TICKER, {})
+
+    def _clear_position_state(self) -> None:
+        self.state.setdefault("positions", {}).pop(TICKER, None)
+        self._save_state()
 
     def get_krw_balance(self) -> float:
         try:
             balance = self.upbit.get_balance("KRW")
             return float(balance) if balance else 0.0
-        except Exception as e:
-            logger.error(f"KRW 잔고 조회 실패: {e}")
-            return 0.0
-
-    def get_btc_balance(self) -> float:
-        try:
-            balance = self.upbit.get_balance(TICKER)
-            return float(balance) if balance else 0.0
-        except Exception as e:
-            logger.error(f"BTC 잔고 조회 실패: {e}")
+        except Exception as exc:
+            logger.error("Failed to load KRW balance: %s", exc)
             return 0.0
 
     def get_current_price(self) -> float:
         try:
             price = pyupbit.get_current_price(TICKER)
             return float(price) if price else 0.0
-        except Exception as e:
-            logger.error(f"현재가 조회 실패: {e}")
+        except Exception as exc:
+            logger.error("Failed to load current price: %s", exc)
             return 0.0
 
+    def get_position(self) -> Dict[str, float]:
+        try:
+            balances = self.upbit.get_balances() or []
+            current_price = self.get_current_price()
+            for balance in balances:
+                if balance.get("currency") != self.coin_symbol:
+                    continue
+
+                available = float(balance.get("balance") or 0.0)
+                locked = float(balance.get("locked") or 0.0)
+                avg_buy_price = float(balance.get("avg_buy_price") or 0.0)
+                total_amount = available + locked
+                mark_price = current_price or avg_buy_price
+                return {
+                    "available": available,
+                    "locked": locked,
+                    "amount": total_amount,
+                    "avg_buy_price": avg_buy_price,
+                    "current_price": current_price,
+                    "value": total_amount * mark_price,
+                }
+        except Exception as exc:
+            logger.error("Failed to load position: %s", exc)
+
+        return {
+            "available": 0.0,
+            "locked": 0.0,
+            "amount": 0.0,
+            "avg_buy_price": 0.0,
+            "current_price": 0.0,
+            "value": 0.0,
+        }
+
+    def has_position(self) -> bool:
+        return self.get_position()["value"] >= MIN_TRADE_AMOUNT_KRW
+
+    def get_risk_signal(self) -> str:
+        position = self.get_position()
+        if position["value"] < MIN_TRADE_AMOUNT_KRW:
+            self._clear_position_state()
+            return "hold"
+
+        current_price = position["current_price"]
+        entry_price = position["avg_buy_price"]
+        if current_price <= 0 or entry_price <= 0:
+            return "hold"
+
+        pos_state = self._position_state()
+        highest_price = max(
+            float(pos_state.get("highest_price") or entry_price),
+            current_price,
+        )
+        pos_state["entry_price"] = entry_price
+        pos_state["highest_price"] = highest_price
+        self._save_state()
+
+        pnl_pct = (current_price - entry_price) / entry_price * 100
+        trail_from_high_pct = (highest_price - current_price) / highest_price * 100
+
+        logger.info(
+            "position pnl=%+.2f%% high_drawdown=%0.2f%% entry=%0.0f high=%0.0f",
+            pnl_pct,
+            trail_from_high_pct,
+            entry_price,
+            highest_price,
+        )
+
+        if pnl_pct <= -STOP_LOSS_PCT:
+            logger.warning("Risk exit: stop loss hit (%+.2f%%)", pnl_pct)
+            return "sell"
+
+        if pnl_pct >= TAKE_PROFIT_PCT and trail_from_high_pct >= TRAILING_STOP_PCT:
+            logger.info(
+                "Risk exit: trailing take profit hit (pnl=%+.2f%% drawdown=%0.2f%%)",
+                pnl_pct,
+                trail_from_high_pct,
+            )
+            return "sell"
+
+        return "hold"
+
     def buy(self) -> bool:
+        if self.has_position():
+            logger.info("Buy skipped: existing %s position is already open", TICKER)
+            return False
+
         krw_balance = self.get_krw_balance()
-        trade_amount = krw_balance * TRADE_RATIO
+        trade_amount = min(krw_balance * TRADE_RATIO, krw_balance * KRW_BALANCE_BUFFER)
 
         if trade_amount < MIN_TRADE_AMOUNT_KRW:
             logger.warning(
-                f"매수 가능 금액 부족: {trade_amount:,.0f}원 "
-                f"(최소 {MIN_TRADE_AMOUNT_KRW:,.0f}원)"
+                "Buy skipped: trade amount %0.0f KRW is below minimum %0.0f KRW",
+                trade_amount,
+                MIN_TRADE_AMOUNT_KRW,
             )
             return False
 
         try:
             result = self.upbit.buy_market_order(TICKER, trade_amount)
             if result and "error" not in result:
-                logger.info(
-                    f"✅ 매수 주문 성공: {trade_amount:,.0f}원 어치 BTC 매수"
-                )
+                current_price = self.get_current_price()
+                pos_state = self._position_state()
+                pos_state["entry_price"] = current_price
+                pos_state["highest_price"] = current_price
+                self._save_state()
+                logger.info("Buy order placed: %s %0.0f KRW", TICKER, trade_amount)
                 return True
-            else:
-                error_msg = result.get("error", {}).get("message", "알 수 없는 오류")
-                logger.error(f"매수 주문 실패: {error_msg}")
-                return False
-        except Exception as e:
-            logger.error(f"매수 주문 중 예외 발생: {e}")
+
+            error_msg = (result or {}).get("error", {}).get("message", "unknown error")
+            logger.error("Buy order failed: %s", error_msg)
+            return False
+        except Exception as exc:
+            logger.error("Buy order raised an exception: %s", exc)
             return False
 
     def sell(self) -> bool:
-        btc_balance = self.get_btc_balance()
-        current_price = self.get_current_price()
-        estimated_krw = btc_balance * current_price
+        position = self.get_position()
+        available = position["available"]
+        current_price = position["current_price"]
+        estimated_krw = available * current_price
 
         if estimated_krw < MIN_TRADE_AMOUNT_KRW:
             logger.warning(
-                f"매도 가능 금액 부족: {estimated_krw:,.0f}원 "
-                f"(최소 {MIN_TRADE_AMOUNT_KRW:,.0f}원)"
+                "Sell skipped: available value %0.0f KRW is below minimum %0.0f KRW",
+                estimated_krw,
+                MIN_TRADE_AMOUNT_KRW,
             )
+            self._clear_position_state()
             return False
 
         try:
-            result = self.upbit.sell_market_order(TICKER, btc_balance)
+            result = self.upbit.sell_market_order(TICKER, available)
             if result and "error" not in result:
-                logger.info(
-                    f"✅ 매도 주문 성공: {btc_balance:.8f} BTC 전량 매도"
-                )
+                logger.info("Sell order placed: %s %.8f", TICKER, available)
+                self._clear_position_state()
                 return True
-            else:
-                error_msg = result.get("error", {}).get("message", "알 수 없는 오류")
-                logger.error(f"매도 주문 실패: {error_msg}")
-                return False
-        except Exception as e:
-            logger.error(f"매도 주문 중 예외 발생: {e}")
+
+            error_msg = (result or {}).get("error", {}).get("message", "unknown error")
+            logger.error("Sell order failed: %s", error_msg)
+            return False
+        except Exception as exc:
+            logger.error("Sell order raised an exception: %s", exc)
             return False
 
-    def print_status(self):
+    def print_status(self) -> None:
         krw = self.get_krw_balance()
-        btc = self.get_btc_balance()
-        price = self.get_current_price()
-        btc_value = btc * price
-        total = krw + btc_value
+        position = self.get_position()
+        total = krw + position["value"]
 
-        logger.info("=" * 50)
-        logger.info(f"💰 KRW 잔고: {krw:,.0f}원")
-        logger.info(f"₿  BTC 보유: {btc:.8f} BTC ({btc_value:,.0f}원)")
-        logger.info(f"📊 총 자산: {total:,.0f}원")
-        logger.info(f"📈 BTC 현재가: {price:,.0f}원")
-        logger.info("=" * 50)
+        logger.info("=" * 56)
+        logger.info("KRW balance: %0.0f", krw)
+        logger.info(
+            "%s holding: %.8f available + %.8f locked (%0.0f KRW)",
+            self.coin_symbol,
+            position["available"],
+            position["locked"],
+            position["value"],
+        )
+        logger.info("Total marked assets: %0.0f KRW", total)
+        logger.info("Current %s price: %0.0f KRW", self.coin_symbol, position["current_price"])
+        logger.info("=" * 56)

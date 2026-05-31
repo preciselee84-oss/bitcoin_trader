@@ -1,11 +1,21 @@
-import time
+import io
 import logging
 import sys
+import time
 from datetime import datetime
 
-from config import CHECK_INTERVAL_SECONDS, TICKER, SHORT_MA_PERIOD, LONG_MA_PERIOD
+from config import (
+    CHECK_INTERVAL_SECONDS,
+    CANDLE_INTERVAL,
+    EMA_FAST_PERIOD,
+    EMA_SLOW_PERIOD,
+    EMA_TREND_PERIOD,
+    TICKER,
+)
 from strategy import get_signal
 from trader import Trader
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,45 +28,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_once(trader: Trader):
-    logger.info(f"--- 매매 체크 시작: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+def run_once(trader: Trader) -> None:
+    logger.info("--- trading check started: %s ---", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     trader.print_status()
 
-    signal = get_signal()
+    if trader.get_risk_signal() == "sell":
+        trader.sell()
+        logger.info("--- next check in %s seconds ---\n", CHECK_INTERVAL_SECONDS)
+        return
+
+    decision = get_signal(return_details=True)
+    signal = decision["signal"]
 
     if signal == "buy":
         trader.buy()
     elif signal == "sell":
         trader.sell()
+    else:
+        logger.info("No order placed.")
 
-    logger.info(f"--- 다음 체크까지 {CHECK_INTERVAL_SECONDS}초 대기 ---\n")
+    logger.info("--- next check in %s seconds ---\n", CHECK_INTERVAL_SECONDS)
 
 
-def main():
+def main() -> None:
     logger.info("=" * 60)
-    logger.info("  비트코인 자동매매 프로그램 시작")
-    logger.info(f"  거래 대상: {TICKER}")
-    logger.info(f"  전략: 이동평균선 크로스 (MA{SHORT_MA_PERIOD} x MA{LONG_MA_PERIOD})")
-    logger.info(f"  체크 간격: {CHECK_INTERVAL_SECONDS}초")
+    logger.info("Bitcoin auto trader started")
+    logger.info("ticker=%s interval=%s", TICKER, CANDLE_INTERVAL)
+    logger.info(
+        "strategy=EMA%d/EMA%d trend EMA%d with RSI, ATR, volume, and trailing risk exits",
+        EMA_FAST_PERIOD,
+        EMA_SLOW_PERIOD,
+        EMA_TREND_PERIOD,
+    )
+    logger.info("check_interval=%s seconds", CHECK_INTERVAL_SECONDS)
     logger.info("=" * 60)
 
     try:
         trader = Trader()
-    except ValueError as e:
-        logger.error(f"초기화 실패: {e}")
+    except ValueError as exc:
+        logger.error("Startup failed: %s", exc)
         sys.exit(1)
-
-    logger.info("자동매매를 시작합니다. 종료하려면 Ctrl+C를 누르세요.\n")
 
     try:
         while True:
             try:
                 run_once(trader)
-            except Exception as e:
-                logger.error(f"매매 루프 중 오류 발생: {e}")
+            except Exception as exc:
+                logger.error("Trading loop error: %s", exc)
             time.sleep(CHECK_INTERVAL_SECONDS)
     except KeyboardInterrupt:
-        logger.info("\n프로그램이 사용자에 의해 종료되었습니다.")
+        logger.info("Stopped by user.")
         trader.print_status()
 
 
