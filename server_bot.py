@@ -4,8 +4,10 @@ import os
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+KST = timezone(timedelta(hours=9))
 from typing import Dict
 
 from config import (
@@ -43,6 +45,7 @@ def setup_logging() -> None:
     if not log_path.is_absolute():
         log_path = Path(__file__).resolve().parent / log_path
 
+    logging.Formatter.converter = lambda *args: datetime.now(KST).timetuple()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -134,7 +137,7 @@ def place_buy(trader: Trader, amount_krw: float, dry_run: bool, reason: str) -> 
 
 
 def run_once(traders: Dict[str, Trader], weights: Dict[str, float], dry_run: bool) -> None:
-    logger.info("--- portfolio bot check started: %s ---", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("--- portfolio bot check started: %s ---", datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"))
 
     snapshot = get_portfolio_snapshot(traders)
     log_portfolio_snapshot(snapshot, weights)
