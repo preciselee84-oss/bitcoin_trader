@@ -78,5 +78,5 @@ TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "1.8"))
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "3.0"))
 
 MIN_TRADE_AMOUNT_KRW = float(os.getenv("MIN_TRADE_AMOUNT_KRW", "5000"))
-CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))
+CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "180"))
 STATE_FILE = os.getenv("STATE_FILE", "trade_state.json")
