@@ -1,0 +1,23 @@
+[Unit]
+Description=Bitcoin Trader cloud bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__PYTHON__ __PROJECT_DIR__/server_bot.py
+Restart=always
+RestartSec=15
+KillSignal=SIGINT
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=__PROJECT_DIR__
+
+[Install]
+WantedBy=multi-user.target
