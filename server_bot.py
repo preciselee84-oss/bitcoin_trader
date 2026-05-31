@@ -136,11 +136,84 @@ def place_buy(trader: Trader, amount_krw: float, dry_run: bool, reason: str) -> 
     return trader.buy(max_krw_amount=amount_krw, allow_existing=True)
 
 
+def init_fixed_targets(traders: Dict[str, Trader], weights: Dict[str, float], total: float) -> None:
+    for ticker, trader in traders.items():
+        target = total * weights[ticker]
+        trader.set_fixed_target(target)
+        logger.info("%s fixed target set: %0.0f KRW", ticker, target)
+
+
+def check_principal_recovery(traders: Dict[str, Trader], dry_run: bool) -> None:
+    for ticker, trader in traders.items():
+        inv = trader.get_investment_state()
+        if inv["principal_recovered"] or inv["total_invested"] <= 0:
+            continue
+
+        position = trader.get_position()
+        current_value = position["value"]
+        net_invested = inv["total_invested"] - inv["total_recovered"]
+
+        if net_invested <= 0:
+            continue
+
+        profit = current_value - net_invested
+        if profit >= net_invested:
+            logger.info(
+                "%s PRINCIPAL RECOVERY: value=%0.0f invested=%0.0f profit=%0.0f -> recovering %0.0f KRW",
+                ticker, current_value, net_invested, profit, net_invested,
+            )
+            if dry_run:
+                logger.info("DRY_RUN: %s principal recovery skipped", ticker)
+            else:
+                if trader.sell_partial_krw(net_invested):
+                    trader.mark_principal_recovered()
+                    logger.info("%s principal recovered! Now trading with profits only", ticker)
+
+
+def check_fixed_rebalance(traders: Dict[str, Trader], snapshot: Dict[str, object], dry_run: bool) -> None:
+    cash_available = float(snapshot["krw"])
+    positions = snapshot["positions"]
+
+    for ticker, trader in traders.items():
+        inv = trader.get_investment_state()
+        fixed_target = inv["fixed_target"]
+        if fixed_target <= 0:
+            continue
+
+        current_value = positions[ticker]["value"]
+        diff = current_value - fixed_target
+        gap_pct = abs(diff) / fixed_target if fixed_target > 0 else 0
+
+        if gap_pct < PORTFOLIO_REBALANCE_GAP_PCT:
+            continue
+
+        if diff > MIN_TRADE_AMOUNT_KRW:
+            excess = diff
+            logger.info("%s FIXED REBALANCE SELL: value=%0.0f target=%0.0f excess=%0.0f", ticker, current_value, fixed_target, excess)
+            if dry_run:
+                logger.info("DRY_RUN: %s rebalance sell skipped", ticker)
+            else:
+                trader.sell_partial_krw(excess)
+
+        elif diff < -MIN_TRADE_AMOUNT_KRW and cash_available > MIN_TRADE_AMOUNT_KRW:
+            shortfall = min(abs(diff), cash_available * KRW_BALANCE_BUFFER)
+            logger.info("%s FIXED REBALANCE BUY: value=%0.0f target=%0.0f shortfall=%0.0f", ticker, current_value, fixed_target, shortfall)
+            if dry_run:
+                logger.info("DRY_RUN: %s rebalance buy skipped", ticker)
+            else:
+                if trader.buy(max_krw_amount=shortfall, allow_existing=True):
+                    cash_available -= shortfall
+
+
 def run_once(traders: Dict[str, Trader], weights: Dict[str, float], dry_run: bool) -> None:
     logger.info("--- portfolio bot check started: %s ---", datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"))
 
     snapshot = get_portfolio_snapshot(traders)
     log_portfolio_snapshot(snapshot, weights)
+
+    init_fixed_targets(traders, weights, float(snapshot["total"]))
+
+    check_principal_recovery(traders, dry_run=dry_run)
 
     decisions = {}
     blocked_from_buy = set()
@@ -175,7 +248,8 @@ def run_once(traders: Dict[str, Trader], weights: Dict[str, float], dry_run: boo
         if ticker in blocked_from_buy or decision["signal"] != "buy":
             continue
 
-        target_value = total * weights[ticker]
+        inv = traders[ticker].get_investment_state()
+        target_value = inv["fixed_target"] if inv["fixed_target"] > 0 else total * weights[ticker]
         current_value = positions[ticker]["value"]
         value_gap = target_value - current_value
         min_gap = max(MIN_TRADE_AMOUNT_KRW, target_value * PORTFOLIO_REBALANCE_GAP_PCT)
@@ -195,6 +269,8 @@ def run_once(traders: Dict[str, Trader], weights: Dict[str, float], dry_run: boo
             cash_available -= buy_amount
         elif dry_run:
             cash_available -= min(buy_amount, cash_available)
+
+    check_fixed_rebalance(traders, snapshot, dry_run=dry_run)
 
 
 def sleep_until_next_check(started_at: float) -> None:

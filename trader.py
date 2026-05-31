@@ -187,6 +187,7 @@ class Trader:
                 pos_state["highest_price"] = current_price
                 self._save_state()
                 logger.info("Buy order placed: %s %0.0f KRW", self.ticker, trade_amount)
+                self.record_buy(trade_amount)
                 return True
 
             error_msg = (result or {}).get("error", {}).get("message", "unknown error")
@@ -194,6 +195,64 @@ class Trader:
             return False
         except Exception as exc:
             logger.error("Buy order raised an exception: %s", exc)
+            return False
+
+    def record_buy(self, amount_krw: float) -> None:
+        ps = self._position_state()
+        ps["total_invested"] = ps.get("total_invested", 0) + amount_krw
+        self._save_state()
+
+    def record_sell(self, amount_krw: float) -> None:
+        ps = self._position_state()
+        ps["total_recovered"] = ps.get("total_recovered", 0) + amount_krw
+        self._save_state()
+
+    def get_investment_state(self) -> Dict[str, Any]:
+        ps = self._position_state()
+        return {
+            "total_invested": ps.get("total_invested", 0),
+            "total_recovered": ps.get("total_recovered", 0),
+            "principal_recovered": ps.get("principal_recovered", False),
+            "fixed_target": ps.get("fixed_target", 0),
+        }
+
+    def set_fixed_target(self, amount_krw: float) -> None:
+        ps = self._position_state()
+        if not ps.get("fixed_target"):
+            ps["fixed_target"] = amount_krw
+            self._save_state()
+
+    def mark_principal_recovered(self) -> None:
+        ps = self._position_state()
+        ps["principal_recovered"] = True
+        self._save_state()
+
+    def sell_partial_krw(self, amount_krw: float) -> bool:
+        position = self.get_position()
+        current_price = position["current_price"]
+        if current_price <= 0:
+            return False
+
+        sell_amount = amount_krw / current_price
+        available = position["available"]
+        sell_amount = min(sell_amount, available)
+        estimated_krw = sell_amount * current_price
+
+        if estimated_krw < MIN_TRADE_AMOUNT_KRW:
+            logger.info("%s partial sell skipped: %0.0f KRW below minimum", self.ticker, estimated_krw)
+            return False
+
+        try:
+            result = self.upbit.sell_market_order(self.ticker, sell_amount)
+            if result and "error" not in result:
+                logger.info("Partial sell: %s %.8f (approx %0.0f KRW)", self.ticker, sell_amount, estimated_krw)
+                self.record_sell(estimated_krw)
+                return True
+            error_msg = (result or {}).get("error", {}).get("message", "unknown error")
+            logger.error("Partial sell failed: %s", error_msg)
+            return False
+        except Exception as exc:
+            logger.error("Partial sell exception: %s", exc)
             return False
 
     def sell(self) -> bool:
@@ -215,6 +274,7 @@ class Trader:
             result = self.upbit.sell_market_order(self.ticker, available)
             if result and "error" not in result:
                 logger.info("Sell order placed: %s %.8f", self.ticker, available)
+                self.record_sell(estimated_krw)
                 self._clear_position_state()
                 return True
 
