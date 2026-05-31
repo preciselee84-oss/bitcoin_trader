@@ -1,0 +1,21 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
+UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+
+TICKER = "KRW-BTC"
+
+SHORT_MA_PERIOD = 5
+LONG_MA_PERIOD = 20
+
+CANDLE_INTERVAL = "day"
+CANDLE_COUNT = 50
+
+TRADE_RATIO = 0.3
+
+MIN_TRADE_AMOUNT_KRW = 5000
+
+CHECK_INTERVAL_SECONDS = 60
