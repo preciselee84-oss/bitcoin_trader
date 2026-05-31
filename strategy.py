@@ -148,7 +148,8 @@ def get_signal(ticker: str = TICKER, return_details: bool = False) -> Any:
     metrics = decision.get("metrics", {})
     if metrics:
         logger.info(
-            "price=%0.0f ema%d=%0.0f ema%d=%0.0f rsi=%0.1f atr=%0.2f%% vol=%0.2fx mom=%0.2f%%",
+            "[%s] price=%0.0f ema%d=%0.0f ema%d=%0.0f rsi=%0.1f atr=%0.2f%% vol=%0.2fx mom=%0.2f%%",
+            ticker,
             metrics["price"],
             EMA_FAST_PERIOD,
             metrics["ema_fast"],
@@ -159,5 +160,5 @@ def get_signal(ticker: str = TICKER, return_details: bool = False) -> Any:
             metrics["volume_ratio"],
             metrics["momentum_pct"],
         )
-    logger.info("signal=%s reason=%s", decision["signal"], decision["reason"])
+    logger.info("[%s] signal=%s reason=%s", ticker, decision["signal"], decision["reason"])
     return decision if return_details else decision["signal"]

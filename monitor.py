@@ -41,6 +41,7 @@ bot_state = {
     "positions": [],
     "recent_trades": [],
     "recent_logs": [],
+    "coins": {},
 }
 
 
@@ -77,7 +78,12 @@ class LogWatcher(threading.Thread):
     def _read_log(self):
         path = Path(LOG_FILE)
         if not path.exists():
+            self.last_pos = 0
             return
+
+        file_size = path.stat().st_size
+        if file_size < self.last_pos:
+            self.last_pos = 0
 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             f.seek(self.last_pos)
@@ -106,6 +112,31 @@ class LogWatcher(threading.Thread):
 
         if "bot check started" in line.lower() or "check started" in line.lower():
             bot_state["status"] = "running"
+
+        m = re.search(
+            r"\[KRW-(\w+)\] price=(\d+) ema\d+=(\d+) ema\d+=(\d+) rsi=([\d.]+) atr=([\d.]+)% vol=([\d.]+)x mom=(-?[\d.]+)%",
+            line,
+        )
+        if m:
+            coin = m.group(1)
+            bot_state["coins"][coin] = {
+                "price": int(m.group(2)),
+                "ema_fast": int(m.group(3)),
+                "ema_slow": int(m.group(4)),
+                "rsi": float(m.group(5)),
+                "atr": float(m.group(6)),
+                "vol": float(m.group(7)),
+                "mom": float(m.group(8)),
+                "signal": "",
+                "reason": "",
+            }
+
+        m = re.search(r"\[KRW-(\w+)\] signal=(\w+) reason=(.*)", line)
+        if m:
+            coin = m.group(1)
+            if coin in bot_state["coins"]:
+                bot_state["coins"][coin]["signal"] = m.group(2)
+                bot_state["coins"][coin]["reason"] = m.group(3)
 
         if "BUY" in line and ("market order" in line.lower() or "buy" in line):
             if "skipped" not in line.lower() and "DRY_RUN" not in line:
@@ -163,6 +194,18 @@ body { background:#0d1117; color:#e6edf3; font-family:'Segoe UI',sans-serif; pad
 .buy { color:#3fb950; } .sell { color:#f85149; }
 .footer { text-align:center; color:#8b949e; font-size:12px; margin-top:20px; }
 .green { color:#3fb950; } .red { color:#f85149; }
+.coin-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; margin-bottom:16px; }
+.coin-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }
+.coin-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+.coin-name { font-size:18px; font-weight:bold; }
+.coin-signal { padding:4px 12px; border-radius:12px; font-size:12px; font-weight:bold; text-transform:uppercase; }
+.signal-buy { background:#3fb950; color:#0d1117; }
+.signal-sell { background:#f85149; color:white; }
+.signal-hold { background:#8b949e; color:#0d1117; }
+.coin-metrics { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.coin-metric { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #21262d; font-size:13px; font-family:Consolas,monospace; }
+.coin-metric .mk { color:#8b949e; } .coin-metric .mv { color:#e6edf3; }
+.coin-reason { margin-top:8px; font-size:11px; color:#8b949e; font-style:italic; }
 </style>
 </head>
 <body>
@@ -179,6 +222,11 @@ body { background:#0d1117; color:#e6edf3; font-family:'Segoe UI',sans-serif; pad
   <div class="card"><div class="label">Invested</div><div class="value">{{INVESTED}}</div></div>
   <div class="card"><div class="label">Total Assets</div><div class="value">{{TOTAL}}</div></div>
   <div class="card"><div class="label">Trades</div><div class="value">{{TRADE_COUNT}}</div></div>
+</div>
+
+<div class="section">
+  <h2>Coin Status</h2>
+  <div class="coin-grid">{{COINS}}</div>
 </div>
 
 <div class="section">
@@ -201,6 +249,33 @@ def dashboard():
     status = bot_state["status"]
     status_class = status if status in ("running", "stopped") else "unknown"
 
+    coin_colors = {"BTC": "#f7931a", "ETH": "#627eea", "SOL": "#00ffa3"}
+    coins_html = ""
+    for coin, data in bot_state["coins"].items():
+        sig = data.get("signal", "hold")
+        sig_cls = f"signal-{sig}" if sig in ("buy", "sell") else "signal-hold"
+        color = coin_colors.get(coin, "#58a6ff")
+        mom = data.get("mom", 0)
+        mom_cls = "green" if mom >= 0 else "red"
+        coins_html += f'''<div class="coin-card">
+  <div class="coin-header">
+    <span class="coin-name" style="color:{color}">{coin}</span>
+    <span class="coin-signal {sig_cls}">{sig}</span>
+  </div>
+  <div class="coin-metrics">
+    <div class="coin-metric"><span class="mk">Price</span><span class="mv">{data.get("price",0):,}</span></div>
+    <div class="coin-metric"><span class="mk">RSI</span><span class="mv">{data.get("rsi",0):.1f}</span></div>
+    <div class="coin-metric"><span class="mk">EMA Fast</span><span class="mv">{data.get("ema_fast",0):,}</span></div>
+    <div class="coin-metric"><span class="mk">EMA Slow</span><span class="mv">{data.get("ema_slow",0):,}</span></div>
+    <div class="coin-metric"><span class="mk">ATR</span><span class="mv">{data.get("atr",0):.2f}%</span></div>
+    <div class="coin-metric"><span class="mk">Volume</span><span class="mv">{data.get("vol",0):.2f}x</span></div>
+    <div class="coin-metric"><span class="mk">Momentum</span><span class="mv {mom_cls}">{mom:+.2f}%</span></div>
+  </div>
+  <div class="coin-reason">{data.get("reason","")}</div>
+</div>\n'''
+    if not coins_html:
+        coins_html = '<div style="color:#8b949e;">Waiting for data...</div>'
+
     trades_html = ""
     for t in reversed(bot_state["recent_trades"][-20:]):
         cls = "buy" if t["action"] == "BUY" else "sell"
@@ -218,6 +293,7 @@ def dashboard():
     html = html.replace("{{INVESTED}}", f'{bot_state["invested"]:,}')
     html = html.replace("{{TOTAL}}", f'{bot_state["total"]:,}')
     html = html.replace("{{TRADE_COUNT}}", str(len(bot_state["recent_trades"])))
+    html = html.replace("{{COINS}}", coins_html)
     html = html.replace("{{TRADES}}", trades_html)
     html = html.replace("{{LOGS}}", logs)
     html = html.replace("{{NOW}}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
